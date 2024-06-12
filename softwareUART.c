@@ -7,6 +7,7 @@
 #include <linux/hrtimer.h>
 #include <linux/uaccess.h>
 #include <linux/kernel.h>
+#include <linux/irq.h> // Add this line to include the header file that defines IRQF_TRIGGER_FALLING
 
 #define UART_CONFIG _IOW('U', 1, UARTConfig)
 
@@ -43,17 +44,21 @@ static enum hrtimer_restart tx_hrtimer_handler(struct hrtimer *timer);
 static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer);
 static irqreturn_t rx_irq_handler(int irq, void *dev_id);
 
+static int isInit = 0;
+
 int initPeripherals(UARTConfig *uart_params)
 {
     // Initialize GPIOs based on the received parameters
     if (gpio_request(uart_params->txPin, "GPIO_TX"))
     {
+        pr_err("Failed to request GPIO_TX\n");
         return -EBUSY;
     }
     gpio_direction_output(uart_params->txPin, 1);
 
     if (gpio_request(uart_params->rxPin, "GPIO_RX"))
     {
+        pr_err("Failed to request GPIO_RX\n");
         gpio_free(uart_params->txPin);
         return -EBUSY;
     }
@@ -68,8 +73,19 @@ int initPeripherals(UARTConfig *uart_params)
 
     // Request IRQ for RX
     rx_gpio_irq = gpio_to_irq(uart_params->rxPin);
+    if (rx_gpio_irq < 0)
+    {
+        pr_err("Failed to map GPIO to IRQ: %d\n", rx_gpio_irq);
+        gpio_free(uart_params->txPin);
+        gpio_free(uart_params->rxPin);
+        return rx_gpio_irq;
+    }
+    
+    pr_info("Mapped GPIO %d to IRQ %d\n", uart_params->rxPin, rx_gpio_irq);
+
     if (request_irq(rx_gpio_irq, rx_irq_handler, IRQF_TRIGGER_FALLING, "soft_uart_rx", NULL))
     {
+        pr_err("Failed to request IRQ for RX\n");
         gpio_free(uart_params->txPin);
         gpio_free(uart_params->rxPin);
         return -1;
@@ -77,6 +93,7 @@ int initPeripherals(UARTConfig *uart_params)
 
     // Required for rx timer intruupt for proper sampling.
     bit_duration = 1000000 / uart_params->baudRate;
+    isInit = 1;
     return 0;
 }
 
@@ -168,11 +185,23 @@ static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer)
 
 static int open(struct inode *inode, struct file *file)
 {
+    pr_info("softwareUART device file opened.\n");
     return 0; // No need to any operation for now.
 }
 
 static int close(struct inode *inode, struct file *file)
 {
+    pr_info("softwareUART device file closed.\n");
+    if (isInit)
+    {
+        free_irq(rx_gpio_irq, NULL);
+        gpio_free(uart_params.txPin);
+        gpio_free(uart_params.rxPin);
+        hrtimer_cancel(&tx_hrtimer);
+        hrtimer_cancel(&rx_hrtimer);
+        isInit = 0;
+    }
+
     return 0; // No need to any operation for now.
 }
 
@@ -280,13 +309,19 @@ static int __init init(void)
 
 static void __exit customExit(void)
 {
+    pr_info("softwareUART device removed\n");
     // Unregister device from kernel
     misc_deregister(&miscDevice);
-    free_irq(rx_gpio_irq, NULL);
-    gpio_free(uart_params.txPin);
-    gpio_free(uart_params.rxPin);
-    hrtimer_cancel(&tx_hrtimer);
-    hrtimer_cancel(&rx_hrtimer);
+
+    if (isInit)
+    {
+        free_irq(rx_gpio_irq, NULL);
+        gpio_free(uart_params.txPin);
+        gpio_free(uart_params.rxPin);
+        hrtimer_cancel(&tx_hrtimer);
+        hrtimer_cancel(&rx_hrtimer);
+        isInit = 0;
+    }
 }
 
 module_init(init);
