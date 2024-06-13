@@ -36,8 +36,8 @@ int main()
 
     // Create a UARTConfig struct
     UARTConfig uart_params;
-    uart_params.txPin = 17;
-    uart_params.rxPin = 76;
+    uart_params.txPin = 24;
+    uart_params.rxPin = 114;
     uart_params.baudRate = 9600;
     uart_params.dataBits = 8;
     uart_params.stopBits = 1;
@@ -52,7 +52,11 @@ int main()
 
 
     // Close the device file
-    close(fd);
+    //close(fd);
+    while(1)
+    {
+
+    }
 
     return 0;
 }

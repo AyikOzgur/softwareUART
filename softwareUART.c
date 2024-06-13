@@ -46,23 +46,54 @@ static irqreturn_t rx_irq_handler(int irq, void *dev_id);
 
 static int isInit = 0;
 
-int initPeripherals(UARTConfig *uart_params)
-{
+int initPeripherals(UARTConfig *uart_params) {
+    int ret;
+
+    pr_info("Initializing peripherals with TX pin: %d, RX pin: %d\n", uart_params->txPin, uart_params->rxPin);
+
     // Initialize GPIOs based on the received parameters
-    if (gpio_request(uart_params->txPin, "GPIO_TX"))
-    {
-        pr_err("Failed to request GPIO_TX\n");
-        return -EBUSY;
+    ret = gpio_request(uart_params->txPin, "GPIO_TX");
+    if (ret) {
+        pr_err("Failed to request GPIO_TX (pin %d), error: %d\n", uart_params->txPin, ret);
+        return ret;
     }
     gpio_direction_output(uart_params->txPin, 1);
 
-    if (gpio_request(uart_params->rxPin, "GPIO_RX"))
-    {
-        pr_err("Failed to request GPIO_RX\n");
+    ret = gpio_request(uart_params->rxPin, "GPIO_RX");
+    if (ret) {
+        pr_err("Failed to request GPIO_RX (pin %d), error: %d\n", uart_params->rxPin, ret);
         gpio_free(uart_params->txPin);
-        return -EBUSY;
+        return ret;
     }
     gpio_direction_input(uart_params->rxPin);
+
+    pr_info("Requested GPIOs - TX: %d, RX: %d\n", uart_params->txPin, uart_params->rxPin);
+
+    // Request IRQ for RX
+    pr_info("Calling gpio_to_irq for RX pin: %d\n", uart_params->rxPin);
+    rx_gpio_irq = gpio_to_irq(uart_params->rxPin);
+    if (rx_gpio_irq < 0) {
+        pr_err("Failed to map GPIO %d to IRQ: %d\n", uart_params->rxPin, rx_gpio_irq);
+        gpio_free(uart_params->txPin);
+        gpio_free(uart_params->rxPin);
+        return rx_gpio_irq;
+    }
+
+    pr_info("Mapped GPIO %d to IRQ %d\n", uart_params->rxPin, rx_gpio_irq);
+
+    ret = request_irq(rx_gpio_irq, rx_irq_handler, IRQF_TRIGGER_FALLING, "soft_uart_rx", NULL);
+    if (ret) {
+        pr_err("Failed to request IRQ %d for RX: %d\n", rx_gpio_irq, ret);
+        gpio_free(uart_params->txPin);
+        gpio_free(uart_params->rxPin);
+        return ret;
+    } else {
+        pr_info("Successfully requested IRQ %d for RX\n", rx_gpio_irq);
+    }
+
+    // Calculate bit duration for rx timer interrupt for proper sampling.
+    bit_duration = 1000000 / uart_params->baudRate;
+    isInit = 1;
 
     // Initialize high-resolution timers
     hrtimer_init(&tx_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -71,29 +102,7 @@ int initPeripherals(UARTConfig *uart_params)
     hrtimer_init(&rx_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
     rx_hrtimer.function = rx_hrtimer_handler;
 
-    // Request IRQ for RX
-    rx_gpio_irq = gpio_to_irq(uart_params->rxPin);
-    if (rx_gpio_irq < 0)
-    {
-        pr_err("Failed to map GPIO to IRQ: %d\n", rx_gpio_irq);
-        gpio_free(uart_params->txPin);
-        gpio_free(uart_params->rxPin);
-        return rx_gpio_irq;
-    }
-    
-    pr_info("Mapped GPIO %d to IRQ %d\n", uart_params->rxPin, rx_gpio_irq);
 
-    if (request_irq(rx_gpio_irq, rx_irq_handler, IRQF_TRIGGER_FALLING, "soft_uart_rx", NULL))
-    {
-        pr_err("Failed to request IRQ for RX\n");
-        gpio_free(uart_params->txPin);
-        gpio_free(uart_params->rxPin);
-        return -1;
-    }
-
-    // Required for rx timer intruupt for proper sampling.
-    bit_duration = 1000000 / uart_params->baudRate;
-    isInit = 1;
     return 0;
 }
 
@@ -144,9 +153,10 @@ static void start_tx(void)
 static irqreturn_t rx_irq_handler(int irq, void *dev_id)
 {
     // Start bit detected.
-    bit_pos = 0;
-    hrtimer_start(&rx_hrtimer, ktime_set(0, bit_duration * 1000), HRTIMER_MODE_REL);
-    disable_irq_nosync(rx_gpio_irq); // Disable gpio interrupt to avoid multiple triggers
+    //bit_pos = 0;
+    //hrtimer_start(&rx_hrtimer, ktime_set(0, bit_duration * 1000), HRTIMER_MODE_REL);
+    //disable_irq_nosync(rx_gpio_irq); // Disable gpio interrupt to avoid multiple triggers
+    pr_info("We have got start bit\n");
     return IRQ_HANDLED;
 }
 
@@ -207,16 +217,16 @@ static int close(struct inode *inode, struct file *file)
 
 static long ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
+    int bytes = 0;
     switch (cmd)
     {
     case UART_CONFIG:
 
-        int bytes = copy_from_user(&uart_params, (UARTConfig *)arg, sizeof(UARTConfig));
+        bytes = copy_from_user(&uart_params, (UARTConfig *)arg, sizeof(UARTConfig));
         if (bytes < 0)
         {
             return -EFAULT;
         }
-
         pr_info("TX Pin: %d\n", uart_params.txPin);
         pr_info("RX Pin: %d\n", uart_params.rxPin);
         pr_info("Baud Rate: %d\n", uart_params.baudRate);
@@ -240,21 +250,18 @@ static long ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 static ssize_t read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
     // Check if there is data to read
-    if (rx_buffer_pos == 0)
-        return 0; // No data available
-
-    // Determine the number of bytes to read
-    int bytes_to_read = min(count, (size_t)rx_buffer_pos);
-
-    // Copy data to userspace
-    if (copy_to_user(buf, rx_buffer, bytes_to_read))
-        return -EFAULT;
-
-    // Shift remaining data in the buffer
-    memmove(rx_buffer, rx_buffer + bytes_to_read, rx_buffer_pos - bytes_to_read);
-    rx_buffer_pos -= bytes_to_read;
-
-    return bytes_to_read;
+    //if (rx_buffer_pos == 0)
+    //    return 0; // No data available
+    //// Determine the number of bytes to read
+    //int bytes_to_read = min(count, (size_t)rx_buffer_pos);
+    //// Copy data to userspace
+    //if (copy_to_user(buf, rx_buffer, bytes_to_read))
+    //    return -EFAULT;
+    //// Shift remaining data in the buffer
+    //memmove(rx_buffer, rx_buffer + bytes_to_read, rx_buffer_pos - bytes_to_read);
+    //rx_buffer_pos -= bytes_to_read;
+    //return bytes_to_read;
+    return 0;
 }
 
 static ssize_t write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
