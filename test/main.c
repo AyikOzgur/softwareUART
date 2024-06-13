@@ -38,7 +38,7 @@ int main()
     UARTConfig uart_params;
     uart_params.txPin = 24;
     uart_params.rxPin = 114;
-    uart_params.baudRate = 9600;
+    uart_params.baudRate = 300;
     uart_params.dataBits = 8;
     uart_params.stopBits = 1;
     uart_params.parity = 0;

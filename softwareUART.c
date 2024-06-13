@@ -152,11 +152,11 @@ static void start_tx(void)
 
 static irqreturn_t rx_irq_handler(int irq, void *dev_id)
 {
+    disable_irq_nosync(rx_gpio_irq); // Disable gpio interrupt to avoid multiple triggers
+    pr_info("We have got start bit\n");
     // Start bit detected.
     //bit_pos = 0;
-    //hrtimer_start(&rx_hrtimer, ktime_set(0, bit_duration * 1000), HRTIMER_MODE_REL);
-    //disable_irq_nosync(rx_gpio_irq); // Disable gpio interrupt to avoid multiple triggers
-    pr_info("We have got start bit\n");
+    hrtimer_start(&rx_hrtimer, ktime_set(0, bit_duration * 1000), HRTIMER_MODE_REL);
     return IRQ_HANDLED;
 }
 
@@ -164,33 +164,32 @@ static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer)
 {
     static char current_byte = 0;
 
-    if (bit_pos <= 8)
+    if (bit_pos < 8)
     {
-        // Read data bits (inverted logic)
+        pr_info("bit %d detected\n", bit_pos);
+
+        // Read data bits
         current_byte >>= 1;
         if (gpio_get_value(uart_params.rxPin))
         {
-            // Set the related bit.
             current_byte |= 0x80;
         }
-        else 
-        {
-            // Clear the related bit.
-            current_byte &= 0x7F;
-        }
 
+        bit_pos++;
         hrtimer_forward_now(&rx_hrtimer, ktime_set(0, bit_duration * 1000));
+        return HRTIMER_RESTART;
     }
-    else if (bit_pos == 9)
+    else if (bit_pos == 8)
     {
-        // Stop bit (inverted logic)
+        pr_info("Stop bit detected. Final byte: %c", current_byte);
         rx_buffer[rx_buffer_pos++] = current_byte;
         current_byte = 0;
+        bit_pos = 0; // Reset bit position
         enable_irq(rx_gpio_irq); // Re-enable GPIO interrupt for the next byte
+        return HRTIMER_NORESTART;
     }
 
-    bit_pos++;
-    return HRTIMER_RESTART;
+    return HRTIMER_NORESTART;
 }
 
 static int open(struct inode *inode, struct file *file)
