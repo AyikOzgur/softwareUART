@@ -8,6 +8,7 @@
 #include <linux/uaccess.h>
 #include <linux/kernel.h>
 #include <linux/irq.h> // Add this line to include the header file that defines IRQF_TRIGGER_FALLING
+#include <linux/printk.h>
 
 #define UART_CONFIG _IOW('U', 1, UARTConfig)
 
@@ -153,7 +154,7 @@ static void start_tx(void)
 static irqreturn_t rx_irq_handler(int irq, void *dev_id)
 {
     disable_irq_nosync(rx_gpio_irq); // Disable gpio interrupt to avoid multiple triggers
-    pr_info("We have got start bit\n");
+    //pr_info("We have got start bit\n");
     // Start bit detected.
     //bit_pos = 0;
     hrtimer_start(&rx_hrtimer, ktime_set(0, bit_duration * 1000), HRTIMER_MODE_REL);
@@ -164,32 +165,32 @@ static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer)
 {
     static char current_byte = 0;
 
+    //pr_info("bit %d detected\n", bit_pos);
+
+    // Read data bits
+    current_byte >>= 1;
+    if (gpio_get_value(uart_params.rxPin))
+    {
+        current_byte |= 0x80;
+    }
+
+    bit_pos++;
+
     if (bit_pos < 8)
     {
-        pr_info("bit %d detected\n", bit_pos);
-
-        // Read data bits
-        current_byte >>= 1;
-        if (gpio_get_value(uart_params.rxPin))
-        {
-            current_byte |= 0x80;
-        }
-
-        bit_pos++;
+        // Read next bit
         hrtimer_forward_now(&rx_hrtimer, ktime_set(0, bit_duration * 1000));
         return HRTIMER_RESTART;
     }
-    else if (bit_pos == 8)
+    else 
     {
-        pr_info("Stop bit detected. Final byte: %c", current_byte);
+        //printk(KERN_INFO "Stop bit detected. Final byte: %c", current_byte);
         rx_buffer[rx_buffer_pos++] = current_byte;
         current_byte = 0;
         bit_pos = 0; // Reset bit position
         enable_irq(rx_gpio_irq); // Re-enable GPIO interrupt for the next byte
         return HRTIMER_NORESTART;
     }
-
-    return HRTIMER_NORESTART;
 }
 
 static int open(struct inode *inode, struct file *file)
@@ -248,19 +249,19 @@ static long ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 static ssize_t read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
+    int bytes_to_read = 0;
     // Check if there is data to read
-    //if (rx_buffer_pos == 0)
-    //    return 0; // No data available
-    //// Determine the number of bytes to read
-    //int bytes_to_read = min(count, (size_t)rx_buffer_pos);
-    //// Copy data to userspace
-    //if (copy_to_user(buf, rx_buffer, bytes_to_read))
-    //    return -EFAULT;
-    //// Shift remaining data in the buffer
-    //memmove(rx_buffer, rx_buffer + bytes_to_read, rx_buffer_pos - bytes_to_read);
-    //rx_buffer_pos -= bytes_to_read;
-    //return bytes_to_read;
-    return 0;
+    if (rx_buffer_pos == 0)
+        return 0; // No data available
+    // Determine the number of bytes to read
+    bytes_to_read = min(count, (size_t)rx_buffer_pos);
+    // Copy data to userspace
+    if (copy_to_user(buf, rx_buffer, bytes_to_read))
+        return -EFAULT;
+    // Shift remaining data in the buffer
+    memmove(rx_buffer, rx_buffer + bytes_to_read, rx_buffer_pos - bytes_to_read);
+    rx_buffer_pos -= bytes_to_read;
+    return bytes_to_read;
 }
 
 static ssize_t write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
