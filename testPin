@@ -33,6 +33,3 @@ do
     # Unexport the GPIO pin
     echo $pin > /sys/class/gpio/unexport
 done
-
-# Command to see gpio numbers.
-# sudo cat /sys/kernel/debug/gpio
