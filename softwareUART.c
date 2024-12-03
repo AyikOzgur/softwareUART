@@ -7,12 +7,12 @@
 #include <linux/hrtimer.h>
 #include <linux/uaccess.h>
 #include <linux/kernel.h>
-#include <linux/irq.h> // Add this line to include the header file that defines IRQF_TRIGGER_FALLING
+#include <linux/irq.h>
 #include <linux/printk.h>
 
 #define UART_CONFIG _IOW('U', 1, UARTConfig)
 
-/* @brief This struct will be available from userspace too.
+/** @brief Configuration parameters for UART
  */
 typedef struct
 {
@@ -31,12 +31,12 @@ typedef struct
 UARTConfig uart_params;
 static struct hrtimer tx_hrtimer;
 static struct hrtimer rx_hrtimer;
-static char tx_buffer[256];
+static char tx_buffer[256]; // Test size
 static int tx_buffer_pos = 0;
 static int tx_buffer_len = 0;
 
 static int rx_gpio_irq;
-static char rx_buffer[256];
+static char rx_buffer[256]; // Test size
 static int rx_buffer_pos = 0;
 static int bit_duration = 0;
 static int bit_pos = 0;
@@ -47,48 +47,52 @@ static irqreturn_t rx_irq_handler(int irq, void *dev_id);
 
 static int isInit = 0;
 
-int initPeripherals(UARTConfig *uart_params) {
+int initPeripherals(UARTConfig *uart_params) 
+{
     int ret;
-
-    pr_info("Initializing peripherals with TX pin: %d, RX pin: %d\n", uart_params->txPin, uart_params->rxPin);
-
     // Initialize GPIOs based on the received parameters
     ret = gpio_request(uart_params->txPin, "GPIO_TX");
-    if (ret) {
+    if (ret) 
+    {
         pr_err("Failed to request GPIO_TX (pin %d), error: %d\n", uart_params->txPin, ret);
         return ret;
     }
     gpio_direction_output(uart_params->txPin, 1);
 
     ret = gpio_request(uart_params->rxPin, "GPIO_RX");
-    if (ret) {
+    if (ret) 
+    {
         pr_err("Failed to request GPIO_RX (pin %d), error: %d\n", uart_params->rxPin, ret);
         gpio_free(uart_params->txPin);
         return ret;
     }
+
     gpio_direction_input(uart_params->rxPin);
 
     pr_info("Requested GPIOs - TX: %d, RX: %d\n", uart_params->txPin, uart_params->rxPin);
 
     // Request IRQ for RX
-    pr_info("Calling gpio_to_irq for RX pin: %d\n", uart_params->rxPin);
     rx_gpio_irq = gpio_to_irq(uart_params->rxPin);
-    if (rx_gpio_irq < 0) {
+    if (rx_gpio_irq < 0) 
+    {
         pr_err("Failed to map GPIO %d to IRQ: %d\n", uart_params->rxPin, rx_gpio_irq);
         gpio_free(uart_params->txPin);
         gpio_free(uart_params->rxPin);
-        return rx_gpio_irq;
+        return ret;
     }
 
     pr_info("Mapped GPIO %d to IRQ %d\n", uart_params->rxPin, rx_gpio_irq);
 
     ret = request_irq(rx_gpio_irq, rx_irq_handler, IRQF_TRIGGER_FALLING, "soft_uart_rx", NULL);
-    if (ret) {
+    if (ret) 
+    {
         pr_err("Failed to request IRQ %d for RX: %d\n", rx_gpio_irq, ret);
         gpio_free(uart_params->txPin);
         gpio_free(uart_params->rxPin);
         return ret;
-    } else {
+    } 
+    else 
+    {
         pr_info("Successfully requested IRQ %d for RX\n", rx_gpio_irq);
     }
 
@@ -103,7 +107,7 @@ int initPeripherals(UARTConfig *uart_params) {
     hrtimer_init(&rx_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
     rx_hrtimer.function = rx_hrtimer_handler;
 
-
+    pr_info("UART initialized successfully\n");
     return 0;
 }
 
@@ -154,9 +158,7 @@ static void start_tx(void)
 static irqreturn_t rx_irq_handler(int irq, void *dev_id)
 {
     disable_irq_nosync(rx_gpio_irq); // Disable gpio interrupt to avoid multiple triggers
-    //pr_info("We have got start bit\n");
     // Start bit detected.
-    //bit_pos = 0;
     hrtimer_start(&rx_hrtimer, ktime_set(0, bit_duration * 1000), HRTIMER_MODE_REL);
     return IRQ_HANDLED;
 }
@@ -164,8 +166,6 @@ static irqreturn_t rx_irq_handler(int irq, void *dev_id)
 static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer)
 {
     static char current_byte = 0;
-
-    //pr_info("bit %d detected\n", bit_pos);
 
     // Read data bits
     current_byte >>= 1;
@@ -184,7 +184,6 @@ static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer)
     }
     else 
     {
-        //printk(KERN_INFO "Stop bit detected. Final byte: %c", current_byte);
         rx_buffer[rx_buffer_pos++] = current_byte;
         current_byte = 0;
         bit_pos = 0; // Reset bit position
@@ -221,7 +220,7 @@ static long ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     switch (cmd)
     {
     case UART_CONFIG:
-
+    {
         bytes = copy_from_user(&uart_params, (UARTConfig *)arg, sizeof(UARTConfig));
         if (bytes < 0)
         {
@@ -235,32 +234,32 @@ static long ioctl(struct file *file, unsigned int cmd, unsigned long arg)
         pr_info("(Not implemented) Parity: %d\n", uart_params.parity);
         pr_info("(Not implemented) Inverted: %c\n", uart_params.isInverted);
 
-        if (initPeripherals(&uart_params) < 0)
-        {
-            return -1;
-        }
-        break;
-    default:
-        return -ENOTTY;
+        return (initPeripherals(&uart_params));
+    }  
     }
 
-    return 0;
+    return -1;
 }
 
 static ssize_t read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
     int bytes_to_read = 0;
+
     // Check if there is data to read
     if (rx_buffer_pos == 0)
         return 0; // No data available
+
     // Determine the number of bytes to read
     bytes_to_read = min(count, (size_t)rx_buffer_pos);
+
     // Copy data to userspace
     if (copy_to_user(buf, rx_buffer, bytes_to_read))
-        return -EFAULT;
+        return -1;
+
     // Shift remaining data in the buffer
     memmove(rx_buffer, rx_buffer + bytes_to_read, rx_buffer_pos - bytes_to_read);
     rx_buffer_pos -= bytes_to_read;
+
     return bytes_to_read;
 }
 
@@ -268,11 +267,11 @@ static ssize_t write(struct file *file, const char __user *buf, size_t count, lo
 {
     // Check if there is enough space in the buffer
     if (count > sizeof(tx_buffer))
-        return -ENOMEM; // Not enough space
+        return -1; // Not enough space
 
     // Copy data from userspace
     if (copy_from_user(tx_buffer, buf, count))
-        return -EFAULT;
+        return -1;
 
     // Set the buffer length and start transmission
     tx_buffer_len = count;
@@ -317,6 +316,7 @@ static int __init init(void)
 static void __exit customExit(void)
 {
     pr_info("softwareUART device removed\n");
+    
     // Unregister device from kernel
     misc_deregister(&miscDevice);
 

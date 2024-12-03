@@ -7,7 +7,7 @@
 
 #define UART_CONFIG _IOW('U', 1, UARTConfig)
 
-/* @brief This struct will be available from userspace too.
+/** @brief Configuration parameters for UART
  */
 typedef struct
 {
@@ -47,15 +47,13 @@ int main()
     // Write the UARTConfig struct to the device file
     if (ioctl(fd, UART_CONFIG, &uart_params) < 0)
     {
-        printf("Not init\n");
+        perror("Failed to initialize UART");
+        close(fd);
+        return errno;
     }
 
-
-    // Close the device file
-    //close(fd);
     while(1)
     {
-
         // Read from file and print it to terminal
         char buffer[32];
         int bytes = read(fd, buffer, sizeof(buffer));
@@ -64,7 +62,6 @@ int main()
             buffer[bytes] = 0;
             printf("Received: %s\n", buffer);
         }
-
     }
 
     return 0;
