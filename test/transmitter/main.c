@@ -36,7 +36,7 @@ int main()
 
     // Create a UARTConfig struct
     UARTConfig uart_params;
-    uart_params.txPin = 24;
+    uart_params.txPin = 103;
     uart_params.rxPin = 114;
     uart_params.baudRate = 9600;
     uart_params.dataBits = 8;
@@ -54,14 +54,11 @@ int main()
 
     while(1)
     {
-        // Read from file and print it to terminal
-        char buffer[32];
-        int bytes = read(fd, buffer, sizeof(buffer));
-        if (bytes > 0)
-        {
-            buffer[bytes] = 0;
-            printf("Received: %s\n", buffer);
-        }
+        char buffer[] = "Hello from user space!\n";
+        
+        write(fd, buffer, sizeof(buffer));
+
+        sleep(1);
     }
 
     return 0;

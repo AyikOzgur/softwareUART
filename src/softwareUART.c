@@ -34,12 +34,15 @@ static struct hrtimer rx_hrtimer;
 static char tx_buffer[256]; // Test size
 static int tx_buffer_pos = 0;
 static int tx_buffer_len = 0;
+static int tx_in_progress = 0;
+static int tx_bit_pos = 0;
+
 
 static int rx_gpio_irq;
 static char rx_buffer[256]; // Test size
 static int rx_buffer_pos = 0;
 static int bit_duration = 0;
-static int bit_pos = 0;
+static int rx_bit_pos = 0;
 
 static enum hrtimer_restart tx_hrtimer_handler(struct hrtimer *timer);
 static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer);
@@ -113,43 +116,54 @@ int initPeripherals(UARTConfig *uart_params)
 
 static enum hrtimer_restart tx_hrtimer_handler(struct hrtimer *timer)
 {
-    static int bit_pos = 0;
     static char current_byte;
 
     if (tx_buffer_pos >= tx_buffer_len)
     {
         // No more data to send
+        tx_in_progress = 0;
         return HRTIMER_NORESTART;
     }
 
-    if (bit_pos == 0)
+    if (tx_bit_pos == 0)
     {
         // Start bit
         gpio_set_value(uart_params.txPin, 0);
         current_byte = tx_buffer[tx_buffer_pos];
     }
-    else if (bit_pos <= 8)
+    else if (tx_bit_pos <= 8)
     {
         // Data bit not inverted.
-        gpio_set_value(uart_params.txPin, (current_byte >> (8 - bit_pos)) & 0x01);
+        gpio_set_value(uart_params.txPin, (current_byte >> (tx_bit_pos - 1)) & 0x01);
     }
-    else if (bit_pos == 9)
+    else if (tx_bit_pos == 9)
     {
-        // Stop bit
-        gpio_set_value(uart_params.txPin, 0);
-        bit_pos = -1;
+        gpio_set_value(uart_params.txPin, 1); // Stop bit
+        tx_bit_pos = -1; // Prepare for the next byte
         tx_buffer_pos++;
+        if (tx_buffer_pos >= tx_buffer_len) 
+        {
+            tx_in_progress = 0;
+            return HRTIMER_NORESTART;
+        }
     }
 
-    bit_pos++;
+    tx_bit_pos++;
     hrtimer_forward_now(&tx_hrtimer, ktime_set(0, bit_duration * 1000)); // bit_duration in microseconds to nanoseconds
     return HRTIMER_RESTART;
 }
 
 static void start_tx(void)
 {
+    if (tx_in_progress) 
+        return;
+    tx_in_progress = 1;
     tx_buffer_pos = 0;
-    if (tx_buffer_len > 0)
+    tx_bit_pos = 0;
+    // Ensure GPIO is in idle state (stop bit = 1)
+    gpio_set_value(uart_params.txPin, 1);
+
+    if (tx_buffer_len > 0) 
     {
         hrtimer_start(&tx_hrtimer, ktime_set(0, bit_duration * 1000), HRTIMER_MODE_REL);
     }
@@ -174,9 +188,9 @@ static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer)
         current_byte |= 0x80;
     }
 
-    bit_pos++;
+    rx_bit_pos++;
 
-    if (bit_pos < 8)
+    if (rx_bit_pos < 8)
     {
         // Read next bit
         hrtimer_forward_now(&rx_hrtimer, ktime_set(0, bit_duration * 1000));
@@ -186,7 +200,7 @@ static enum hrtimer_restart rx_hrtimer_handler(struct hrtimer *timer)
     {
         rx_buffer[rx_buffer_pos++] = current_byte;
         current_byte = 0;
-        bit_pos = 0; // Reset bit position
+        rx_bit_pos = 0; // Reset bit position
         enable_irq(rx_gpio_irq); // Re-enable GPIO interrupt for the next byte
         return HRTIMER_NORESTART;
     }
