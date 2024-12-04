@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -Wall -Wextra
 
-TARGET = softwareUARTTest
+TARGET = transmitterTest
 SRC = main.c
 
 all: $(TARGET)
